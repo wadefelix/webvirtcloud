@@ -5,11 +5,14 @@ from admin.decorators import superuser_only
 from appsettings.settings import app_settings
 from computes.models import Compute
 from django.contrib import messages
-from django.http import HttpResponse, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from libvirt import libvirtError
+import paramiko
+
+from vrtManager.connection import CONN_SSH, CONN_SOCKET
 from vrtManager.storage import wvmStorage, wvmStorages
 
 from storages.forms import AddStgPool, CloneImage, CreateVolumeForm
@@ -102,20 +105,52 @@ def storage(request, compute_id, pool):
     :param pool:
     :return:
     """
+    def handle_uploaded_file(conn, path, file_name, file_chunk, is_last_chunk):
+        temp_name = f"{file_name}.part"
+        target_temp = os.path.normpath(os.path.join(path, temp_name))
+        target_final = os.path.normpath(os.path.join(path, file_name))
 
-    def handle_uploaded_file(path, f_name):
-        target = os.path.normpath(os.path.join(path, str(f_name)))
-        if not target.startswith(path):
+        if not target_temp.startswith(path) or not target_final.startswith(path):
             raise Exception(_("Security Issues with file uploading"))
 
-        try:
-            with open(target, "wb+") as f:
-                for chunk in f_name.chunks():
-                    f.write(chunk)
-        except FileNotFoundError:
-            messages.error(
-                request, _("File not found. Check the path variable and filename")
-            )
+        if conn.conn == CONN_SSH:
+            try:
+                hostname, port = conn.host, 22
+                if ":" in hostname:
+                    hostname, port_str = hostname.split(":")
+                    port = int(port_str)
+
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(hostname=hostname, port=port, username=conn.login, password=conn.passwd)
+                sftp = ssh.open_sftp()
+
+                remote_file = sftp.open(target_temp, 'ab')
+                remote_file.set_pipelined(True)
+                for chunk_data in file_chunk.chunks():
+                    remote_file.write(chunk_data)
+                remote_file.close()
+
+                if is_last_chunk:
+                    sftp.rename(target_temp, target_final)
+
+                sftp.close()
+                ssh.close()
+            except Exception as e:
+                raise Exception(_("SSH upload failed: {}").format(e))
+        elif conn.conn == CONN_SOCKET:
+            try:
+                with open(target_temp, "ab") as f:
+                    for chunk_data in file_chunk.chunks():
+                        f.write(chunk_data)
+                if is_last_chunk:
+                    if os.path.exists(target_final):
+                        os.remove(target_final)
+                    os.rename(target_temp, target_final)
+            except FileNotFoundError:
+                raise Exception(_("File not found. Check the path variable and filename"))
+        else:
+            raise Exception(_("Unsupported connection type for file upload."))
 
     compute = get_object_or_404(Compute, pk=compute_id)
     meta_prealloc = False
@@ -127,12 +162,16 @@ def storage(request, compute_id, pool):
 
     storages = conn.get_storages()
     state = conn.is_active()
-    size, free = conn.get_size()
-    used = size - free
-    if state:
-        percent = (used * 100) // size
-    else:
-        percent = 0
+    try:
+        size, free = conn.get_size()
+        used = size - free
+        if state:
+            percent = (used * 100) // size
+        else:
+            percent = 0
+    except libvirtError:
+        size, free, used, percent = 0, 0, 0, 0
+
     status = conn.get_status()
     path = conn.get_target_path()
     type = conn.get_type()
@@ -170,16 +209,56 @@ def storage(request, compute_id, pool):
             return redirect(reverse("storage", args=[compute.id, pool]))
             # return HttpResponseRedirect(request.get_full_path())
         if "iso_upload" in request.POST:
-            if str(request.FILES["file"]) in conn.update_volumes():
-                error_msg = _("ISO image already exist")
+            file_chunk = request.FILES.get("file")
+            if not file_chunk:
+                return JsonResponse({"error": _("No file chunk was submitted.")}, status=400)
+
+            file_name = request.POST.get("file_name")
+            chunk_index = int(request.POST.get("chunk_index", 0))
+            total_chunks = int(request.POST.get("total_chunks", 1))
+            is_last_chunk = chunk_index == total_chunks - 1
+
+            # On first chunk, check if file already exists
+            if chunk_index == 0:
+                if file_name in conn.get_volumes():
+                    return JsonResponse({"error": _("ISO image already exists")}, status=400)
+                # Clean up any partial files from previous failed uploads
+                temp_part_file = os.path.normpath(os.path.join(path, f"{file_name}.part"))
+                if conn.conn == CONN_SOCKET and os.path.exists(temp_part_file):
+                    os.remove(temp_part_file)
+                elif conn.conn == CONN_SSH:
+                    try:
+                        hostname, port = conn.host, 22
+                        if ":" in hostname:
+                            hostname, port_str = hostname.split(":")
+                            port = int(port_str)
+                        ssh = paramiko.SSHClient()
+                        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        ssh.connect(hostname=hostname, port=port, username=conn.login, password=conn.passwd)
+                        sftp = ssh.open_sftp()
+                        try:
+                            sftp.remove(temp_part_file)
+                        except FileNotFoundError:
+                            pass # File doesn't exist, which is fine
+                        sftp.close()
+                        ssh.close()
+                    except Exception:
+                        # Best effort to clean up, if it fails, let it be.
+                        pass
+
+            try:
+                handle_uploaded_file(conn, path, file_name, file_chunk, is_last_chunk)
+
+                if is_last_chunk:
+                    success_msg = _("ISO: %(file)s has been uploaded successfully.") % {"file": file_name}
+                    messages.success(request, success_msg)
+                    return JsonResponse({"success": True, "message": success_msg, "reload": True})
+                else:
+                    return JsonResponse({"success": True, "message": "Chunk received."})
+            except Exception as e:
+                error_msg = str(e)
                 messages.error(request, error_msg)
-            else:
-                handle_uploaded_file(path, request.FILES["file"])
-                messages.success(
-                    request,
-                    _("ISO: %(file)s is uploaded.") % {"file": request.FILES["file"]},
-                )
-                return HttpResponseRedirect(request.get_full_path())
+                return JsonResponse({"error": error_msg}, status=500)
         if "cln_volume" in request.POST:
             form = CloneImage(request.POST)
             if form.is_valid():
