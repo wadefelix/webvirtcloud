@@ -58,32 +58,31 @@
                 <dd class="col-6">{{ used|filesizeformat }}</dd>
                 <dt class="col-6">{% trans "State" %}</dt>
                 <dd class="col-6">
-                    <form action="" method="post" role="form" aria-label="Storage start/stop form">{% csrf_token %}
+                    <form action="" method="post" role="form" aria-label="Storage start/stop form" class="confirm-form">{% csrf_token %}
                         {% if state == 0 %}
                             <input type="submit" class="btn btn-sm btn-secondary" name="start" value="{% trans "Start" %}">
-                            <input type="submit" class="btn btn-sm btn-danger" name="delete" value="{% trans "Delete" %}"
-                                    onclick="return confirm('{% trans "Are you sure?" %}')">
+                            <input type="submit" class="btn btn-sm btn-danger" name="delete" value="{% trans "Delete" %}">
                         {% else %}
-                            <input type="submit" class="btn btn-sm btn-secondary" name="stop" value="{% trans "Stop" %}"
-                                    onclick="return confirm('{% trans "Are you sure?" %}')">
+                            <input type="submit" class="btn btn-sm btn-secondary" name="stop" value="{% trans "Stop" %}">
                         {% endif %}
                     </form>
                 </dd>
                 <dt class="col-6">{% trans "Autostart" %}</dt>
                 <dd class="col-6">
-                    <form action="" method="post" role="form" aria-label="Storage disable/enable autostart form">{% csrf_token %}
+                    <form action="" method="post" role="form" aria-label="Storage disable/enable autostart form" class="confirm-form">{% csrf_token %}
                     {% if autostart == 0 %}
                         <input type="submit" class="btn btn-sm btn-secondary" name="set_autostart"
                                 value="{% trans "Enable" %}">
                         {% else %}
                         <input type="submit" class="btn btn-sm btn-secondary" name="unset_autostart"
-                                onclick="return confirm('{% trans "Are you sure?" %}')" value="{% trans "Disable" %}">
+                                value="{% trans "Disable" %}">
                     {% endif %}
                 </form>
                 </dd>
             </dl>
         </div>
     </div>
+
     
     {% if state %}
         <p>
@@ -171,9 +170,9 @@
                         {% endif %}
                     </td>  
                     <td>  
-                        <form action="" method="post" role="form" aria-label="Delete volume form">{% csrf_token %}
+                        <form action="" method="post" role="form" aria-label="Delete volume form" class="confirm-form">{% csrf_token %}
                             <input type="hidden" name="volname" value="{{ volume.name }}">
-                            <button type="submit" class="btn btn-sm btn-secondary" name="del_volume" title="{% trans "Delete" %}" onclick="return confirm('{% trans "Are you sure?" %}')">
+                            <button type="submit" class="btn btn-sm btn-secondary" name="del_volume" title="{% trans "Delete" %}">
                                 {% bs_icon 'trash' %} 
                             </button>
                         </form>
@@ -215,6 +214,81 @@
             } else {
                 $('.meta-prealloc').hide();
             }
+        });
+
+        $(document).ready(function() {
+            $('.confirm-form').on('submit', function(e) {
+                if (!confirm('{% trans "Are you sure?"|escapejs %}')) {
+                    e.preventDefault();
+                }
+            });
+
+            $('#isoUploadForm').on('submit', function(e) {
+                e.preventDefault();
+
+                var fileInput = $('#id_file')[0];
+                if (fileInput.files.length === 0) {
+                    alert("{% trans 'Please select a file to upload.'|escapejs %}");
+                    return;
+                }
+
+                var file = fileInput.files[0];
+                var fileName = file.name;
+                var chunkSize = 10 * 1024 * 1024; // 10MB
+                var totalChunks = Math.ceil(file.size / chunkSize);
+                var chunkIndex = 0;
+
+                var progressBar = $('#upload-progress-bar');
+                var progressContainer = $('#upload-progress-container');
+                var errorMessage = $('#upload-error-message');
+
+                progressContainer.show();
+                progressBar.width('0%').attr('aria-valuenow', 0).text('0%');
+                errorMessage.hide();
+
+                function uploadChunk() {
+                    if (chunkIndex >= totalChunks) {
+                        return;
+                    }
+
+                    var start = chunkIndex * chunkSize;
+                    var end = Math.min(start + chunkSize, file.size);
+                    var chunk = file.slice(start, end);
+
+                    var formData = new FormData();
+                    formData.append('file', chunk, fileName);
+                    formData.append('file_name', fileName);
+                    formData.append('chunk_index', chunkIndex);
+                    formData.append('total_chunks', totalChunks);
+                    formData.append('iso_upload', 'true');
+                    formData.append('csrfmiddlewaretoken', '{{ csrf_token }}');
+
+                    $.ajax({
+                        url: "{% url 'storage' compute.id pool %}",
+                        type: 'POST',
+                        data: formData,
+                        processData: false,
+                        contentType: false,
+                        success: function(data) {
+                            chunkIndex++;
+                            var percentComplete = Math.round((chunkIndex / totalChunks) * 100);
+                            progressBar.width(percentComplete + '%').attr('aria-valuenow', percentComplete).text(percentComplete + '%');
+
+                            if (data.reload) {
+                                location.reload();
+                            } else if (chunkIndex < totalChunks) {
+                                uploadChunk();
+                            }
+                        },
+                        error: function(jqXHR, textStatus, errorThrown) {
+                            var errorText = jqXHR.responseJSON && jqXHR.responseJSON.error ? jqXHR.responseJSON.error : "{% trans 'An error occurred during upload.'|escapejs %}";
+                            errorMessage.text(errorText).show();
+                            progressContainer.hide();
+                        }
+                    });
+                }
+                uploadChunk();
+            });
         });
     </script>
 {% endblock %}

@@ -16,20 +16,27 @@
                             <h5 class="modal-title">{% trans "Upload ISO Image" %}</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                         </div>
-                        <div class="modal-body">
-                            <form enctype="multipart/form-data" method="post" role="form" aria-label="Upload iso form">{% csrf_token %}
-                                <div class="row">
-                                    <label class="col-sm-3 col-form-label">{% trans "Name" %}</label>
-                                    <div class="col-sm-6">
-                                        <input type="file" name="file" id="id_file">
+                        <form id="isoUploadForm" enctype="multipart/form-data" method="post" role="form" aria-label="Upload iso form">{% csrf_token %}
+                            <div class="modal-body">
+                                <div class="row mb-3">
+                                    <label for="id_file" class="col-sm-3 col-form-label">{% trans "Name" %}</label>
+                                    <div class="col-sm-9">
+                                        <input type="file" name="file" id="id_file" class="form-control" required>
                                     </div>
                                 </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{% trans "Close" %}</button>
-                            <button type="submit" class="btn btn-primary" name="iso_upload">{% trans "Upload" %}</button>
-                        </div>
-                            </form>
+                                <div id="upload-progress-container" class="mt-3" style="display: none;">
+                                    <div class="progress">
+                                        <div id="upload-progress-bar" class="progress-bar" role="progressbar" style="width: 0%;" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                                    </div>
+                                </div>
+                                <div id="upload-error-message" class="alert alert-danger mt-3" style="display: none;"></div>
+                            </div>
+                            <div class="modal-footer">
+                                <input type="hidden" name="iso_upload" value="true">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">{% trans "Close" %}</button>
+                                <button type="submit" class="btn btn-primary">{% trans "Upload" %}</button>
+                            </div>
+                        </form>
 
                     </div> <!-- /.modal-content -->
                 </div> <!-- /.modal-dialog -->
